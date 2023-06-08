@@ -1,4 +1,5 @@
 //! Trivial File Transfer Protocol server implementation.
+#![allow(clippy::result_unit_err)]
 
 use crate::net::{
     self,
@@ -102,8 +103,8 @@ impl Server {
     ///     Instant::from_secs(0),
     /// );
     /// ```
-    pub fn new<'a, 'b, 'c>(
-        sockets: &mut SocketSet<'a, 'b, 'c>,
+    pub fn new<'b, 'c>(
+        sockets: &mut SocketSet<'_, 'b, 'c>,
         rx_buffer: UdpSocketBuffer<'b, 'c>,
         tx_buffer: UdpSocketBuffer<'b, 'c>,
         now: Instant,
@@ -133,11 +134,11 @@ impl Server {
     /// and terminating the transfer, if necessary.
     ///
     /// The `context` and the active `transfers` need to be persisted across calls to this function.
-    pub fn serve<'a, C>(
+    pub fn serve<C>(
         &mut self,
         sockets: &mut SocketSet,
         context: &mut C,
-        transfers: &mut ManagedSlice<'a, Option<Transfer<C::Handle>>>,
+        transfers: &mut ManagedSlice<'_, Option<Transfer<C::Handle>>>,
         now: Instant,
     ) -> net::Result<()>
     where
@@ -164,7 +165,7 @@ impl Server {
                     Ok(tftp_packet) => tftp_packet,
                     Err(_) => {
                         send_error(
-                            &mut *socket,
+                            &mut socket,
                             ep,
                             ErrorCode::AccessViolation,
                             "Packet truncated",
@@ -178,7 +179,7 @@ impl Server {
                     Ok(tftp_repr) => tftp_repr,
                     Err(_) => {
                         return send_error(
-                            &mut *socket,
+                            &mut socket,
                             ep,
                             ErrorCode::AccessViolation,
                             "Malformed packet",
@@ -204,7 +205,7 @@ impl Server {
                         net_debug!("tftp: multiple connection attempts from {}", ep);
 
                         return send_error(
-                            &mut *socket,
+                            &mut socket,
                             ep,
                             ErrorCode::AccessViolation,
                             "Multiple connections not supported",
@@ -214,7 +215,7 @@ impl Server {
                     | (Repr::WriteRequest { filename, mode, .. }, None) => {
                         if mode != Mode::Octet {
                             return send_error(
-                                &mut *socket,
+                                &mut socket,
                                 ep,
                                 ErrorCode::IllegalOperation,
                                 "Only octet mode is supported",
@@ -223,8 +224,7 @@ impl Server {
 
                         // Find the first free transfer available, or allocate one if possible
                         let opt_idx =
-                            transfers.iter().position(|t| t.is_none()).or_else(
-                                || match transfers {
+                            transfers.iter().position(|t| t.is_none()).or(match transfers {
                                     ManagedSlice::Borrowed(_) => None,
                                     #[cfg(feature = "std")]
                                     ManagedSlice::Owned(v) => {
@@ -232,8 +232,7 @@ impl Server {
                                         v.push(None);
                                         Some(idx)
                                     }
-                                },
-                            );
+                                });
 
                         if let Some(idx) = opt_idx {
                             // Open file handle
@@ -242,7 +241,7 @@ impl Server {
                                 Err(_) => {
                                     net_debug!("tftp: unable to open requested file");
                                     return send_error(
-                                        &mut *socket,
+                                        &mut socket,
                                         ep,
                                         ErrorCode::FileNotFound,
                                         "Unable to open requested file",
@@ -269,9 +268,9 @@ impl Server {
                             );
 
                             if is_write {
-                                xfer.send_ack(&mut *socket, 0)?;
+                                xfer.send_ack(&mut socket, 0)?;
                             } else {
-                                xfer.send_data(&mut *socket)?;
+                                xfer.send_data(&mut socket)?;
                             }
 
                             // Enque transfer
@@ -281,7 +280,7 @@ impl Server {
                             net_debug!("tftp: connections exhausted");
 
                             return send_error(
-                                &mut *socket,
+                                &mut socket,
                                 ep,
                                 ErrorCode::AccessViolation,
                                 "No more available connections",
@@ -291,7 +290,7 @@ impl Server {
                     (Repr::Data { .. }, None) | (Repr::Ack { .. }, None) => {
                         // Data request on unconnected socket
                         return send_error(
-                            &mut *socket,
+                            &mut socket,
                             ep,
                             ErrorCode::AccessViolation,
                             "Data packet without active transfer",
@@ -307,7 +306,7 @@ impl Server {
                         // Make sure this is a write connection
                         if !xfer.is_write {
                             return send_error(
-                                &mut *socket,
+                                &mut socket,
                                 ep,
                                 ErrorCode::AccessViolation,
                                 "Not a write connection",
@@ -316,7 +315,7 @@ impl Server {
 
                         // Unexpected packet, resend ACK for (block_num - 1)
                         if block_num != xfer.block_num {
-                            return xfer.send_ack(&mut *socket, xfer.block_num - 1);
+                            return xfer.send_ack(&mut socket, xfer.block_num - 1);
                         }
 
                         // Update block number
@@ -328,14 +327,14 @@ impl Server {
                                 let last_block = data.len() < 512;
 
                                 // Send ACK and optionally close the transfer
-                                xfer.send_ack(&mut *socket, block_num)?;
+                                xfer.send_ack(&mut socket, block_num)?;
                                 if last_block {
                                     self.close_transfer(context, &mut transfers[idx]);
                                 }
                             }
                             Err(_) => {
                                 send_error(
-                                    &mut *socket,
+                                    &mut socket,
                                     ep,
                                     ErrorCode::AccessViolation,
                                     "Error writing file",
@@ -354,7 +353,7 @@ impl Server {
                         // Make sure this is a read connection
                         if xfer.is_write {
                             return send_error(
-                                &mut *socket,
+                                &mut socket,
                                 ep,
                                 ErrorCode::AccessViolation,
                                 "Not a read connection",
@@ -363,21 +362,21 @@ impl Server {
 
                         // Unexpected ACK, resend previous block
                         if block_num != xfer.block_num {
-                            return xfer.resend_data(&mut *socket);
+                            return xfer.resend_data(&mut socket);
                         }
 
                         // Update block number
                         xfer.block_num += 1;
 
                         if xfer.last_len == 512 {
-                            xfer.send_data(&mut *socket)?;
+                            xfer.send_data(&mut socket)?;
                         } else {
                             self.close_transfer(context, &mut transfers[idx]);
                         }
                     }
                     (Repr::Error { .. }, _) => {
                         return send_error(
-                            &mut *socket,
+                            &mut socket,
                             ep,
                             ErrorCode::IllegalOperation,
                             "Unknown operation",

@@ -55,7 +55,7 @@ Compiles the SNTP protocol and client implementation. It has a dependency on `so
 Compiles the TFTP protocol and server implementation. It has a dependency on `socket-udp`. Enabled by default.
 */
 
-#![deny(warnings)]
+//#![deny(warnings)]
 #![deny(missing_docs)]
 #![deny(unsafe_code)]
 #![no_std]

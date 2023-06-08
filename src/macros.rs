@@ -43,7 +43,7 @@ macro_rules! enum_with_unknown {
         enum_with_unknown! {
             $( #[$enum_attr] )*
             pub doc enum $name($ty) {
-                $( #[doc(shown)] $variant = $value ),+
+                $( #[doc = ""] $variant = $value ),+
             }
         }
     };

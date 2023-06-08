@@ -134,7 +134,7 @@ impl Client {
             None if socket.can_send() && now >= self.next_request => {
                 // The timeout has expired.
                 // Send a request, set the timeout and increment interval using exponential backoff.
-                self.request(&mut *socket)?;
+                self.request(&mut socket)?;
                 self.next_request = now + self.curr_interval;
                 self.curr_interval = MAX_REQUEST_INTERVAL.min(self.curr_interval * 2);
                 Ok(None)

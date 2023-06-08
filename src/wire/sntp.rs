@@ -108,9 +108,9 @@ impl From<u8> for Stratum {
     }
 }
 
-impl Into<u8> for Stratum {
-    fn into(self) -> u8 {
-        match self {
+impl From<Stratum> for u8 {
+    fn from(val: Stratum) -> Self {
+        match val {
             Stratum::KissOfDeath => 0,
             Stratum::Primary => 1,
             Stratum::Secondary(s) | Stratum::Reserved(s) => s,
