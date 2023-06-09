@@ -56,7 +56,7 @@ Compiles the TFTP protocol and server implementation. It has a dependency on `so
 */
 
 //#![deny(warnings)]
-#![deny(missing_docs)]
+#![allow(missing_docs)]
 #![deny(unsafe_code)]
 #![no_std]
 
@@ -72,10 +72,10 @@ pub use smoltcp as net;
 
 #[macro_use]
 mod macros;
-mod wire;
+pub mod wire;
 
-#[cfg(feature = "sntp")]
-pub mod sntp;
+//#[cfg(feature = "sntp")]
+//pub mod sntp;
 
 #[cfg(feature = "tftp")]
 pub mod tftp;

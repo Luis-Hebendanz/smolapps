@@ -7,7 +7,9 @@
 
 use byteorder::{ByteOrder, NetworkEndian};
 use core::str;
-use smoltcp::{Error, Result};
+use smoltcp::wire::{Error, Result};
+
+
 
 enum_with_unknown! {
     /// One of the possible operations supported by TFTP.
@@ -115,15 +117,15 @@ impl<T: AsRef<[u8]>> Packet<T> {
     pub fn check_len(&self) -> Result<()> {
         let len = self.buffer.as_ref().len();
         if len < field::OPCODE.end {
-            Err(Error::Truncated)
+            Err(Error)
         } else {
             let end = match self.opcode() {
                 OpCode::Read | OpCode::Write | OpCode::Error => self.find_last_null_byte()?,
                 OpCode::Data | OpCode::Ack => field::BLOCK.end,
-                OpCode::Unknown(_) => return Err(Error::Malformed),
+                OpCode::Unknown(_) => return Err(Error),
             };
             if len < end {
-                Err(Error::Truncated)
+                Err(Error)
             } else {
                 Ok(())
             }
@@ -184,7 +186,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
             .iter()
             .rposition(|b| *b == 0)
             .map(|p| p + 1) // account for 0-based indexing
-            .ok_or(Error::Truncated)
+            .ok_or(Error)
     }
 }
 
@@ -290,7 +292,7 @@ impl<'a> Repr<'a> {
                 code: packet.error_code(),
                 msg: packet.error_msg(),
             },
-            OpCode::Unknown(_) => return Err(Error::Malformed),
+            OpCode::Unknown(_) => return Err(Error),
         })
     }
 

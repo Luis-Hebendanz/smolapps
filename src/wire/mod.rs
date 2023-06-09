@@ -4,8 +4,8 @@ The `wire` module deals with the packet *representation*.
 Refer to the [module-level documentation] in `smoltcp` for additional details.
 */
 
-#[cfg(feature = "sntp")]
-pub(crate) mod sntp;
+//#[cfg(feature = "sntp")]
+//pub(crate) mod sntp;
 
 #[cfg(feature = "tftp")]
-pub(crate) mod tftp;
+pub mod tftp;

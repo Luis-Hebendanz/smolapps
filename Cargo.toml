@@ -15,7 +15,7 @@ version = "0.1.4"
 all-features = true
 
 [dependencies]
-smoltcp = { version = "0.6.0", default-features = false }
+smoltcp = { path = "../smoltcp" }
 byteorder = { version = "1.3.4", default-features = false }
 managed = { version = "0.7.1", default-features = false }
 log = { version = "0.4.8", default-features = false, optional = true }
@@ -35,7 +35,7 @@ ipv4 = ["smoltcp/proto-ipv4"]
 std = ["smoltcp/std", "managed/std"]
 
 # For test harness
-tap = ["log", "smoltcp/ethernet", "smoltcp/phy-tap_interface"]
+tap = ["log"]
 
 [[example]]
 name = "sntp"
