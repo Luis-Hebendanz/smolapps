@@ -9,8 +9,6 @@ use byteorder::{ByteOrder, NetworkEndian};
 use core::str;
 use smoltcp::wire::{Error, Result};
 
-
-
 enum_with_unknown! {
     /// One of the possible operations supported by TFTP.
     pub enum OpCode(u16) {
@@ -19,6 +17,7 @@ enum_with_unknown! {
         Data = 3,
         Ack = 4,
         Error = 5,
+        OptionAck = 6,
     }
 }
 
@@ -121,7 +120,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
         } else {
             let end = match self.opcode() {
                 OpCode::Read | OpCode::Write | OpCode::Error => self.find_last_null_byte()?,
-                OpCode::Data | OpCode::Ack => field::BLOCK.end,
+                OpCode::Data | OpCode::Ack | OpCode::OptionAck => field::BLOCK.end,
                 OpCode::Unknown(_) => return Err(Error),
             };
             if len < end {
@@ -154,6 +153,8 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     /// Returns the operating mode of this packet.
     pub fn mode(&self) -> Mode {
+        // TODO: We could improve the parsing performance of this by caching the start index.
+        // Or by doing this explicitly in the emit Repr function.
         let start = field::OPCODE.end + self.filename().len() + 1;
         self.buffer.as_ref()[start].into()
     }
@@ -166,6 +167,14 @@ impl<T: AsRef<[u8]>> Packet<T> {
     /// Returns the data contained in this packet.
     pub fn data(&self) -> &[u8] {
         &self.buffer.as_ref()[field::DATA]
+    }
+
+    /// Returns the options contained in this packet.
+    pub fn options(&self) -> TftpOptsParser {
+        // TODO: We could improve the parsing performance of this by caching the start index.
+        // Or by doing this explicitly in the emit Repr function.
+        let start = field::OPCODE.end + self.filename().len() + 1 + self.mode().as_str().len() + 1;
+        TftpOptsParser::new(&self.buffer.as_ref()[start..])
     }
 
     /// Returns the error code of this packet.
@@ -239,17 +248,76 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     }
 }
 
+/// TFTP Option
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct TftpOption<'a> {
+    pub name: &'a str,
+    pub value: &'a str,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct TftpOptsParser<'a>(&'a [u8]);
+
+impl TftpOptsParser<'_> {
+    /// Create a new TFTP options parser.
+    pub fn new(options: &'_ [u8]) -> TftpOptsParser<'_> {
+        TftpOptsParser(options)
+    }
+
+    /// Returns the size in bytes of the options.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Returns reference to the options as a byte slice.
+    pub fn as_bytes(&self) -> &[u8] {
+        self.0
+    }
+
+    /// Return an iterator over the options.
+    #[inline]
+    pub fn options(&self) -> impl Iterator<Item = TftpOption<'_>> + '_ {
+        let mut parts = self.as_bytes().split(|&b| b == 0);
+
+        core::iter::from_fn(move || loop {
+            let name = match parts.next() {
+                Some(name) => name,
+                None => return None,
+            };
+            if name.is_empty() {
+                return None;
+            }
+            let value = parts.next().unwrap_or(&[]);
+
+            return Some(TftpOption {
+                name: core::str::from_utf8(name).unwrap(),
+                value: core::str::from_utf8(value).unwrap(),
+            });
+        })
+    }
+}
+
 /// A high-level representation of a Trivial File Transfer Protocol packet.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum Repr<'a> {
     /// Read request (RRQ) packet.
-    ReadRequest { filename: &'a str, mode: Mode },
+    ReadRequest {
+        filename: &'a str,
+        mode: Mode,
+        opts: TftpOptsParser<'a>,
+    },
     /// Write request (WRQ) packet.
-    WriteRequest { filename: &'a str, mode: Mode },
+    WriteRequest {
+        filename: &'a str,
+        mode: Mode,
+        opts: TftpOptsParser<'a>,
+    },
     /// Data (DATA) packet.
     Data { block_num: u16, data: &'a [u8] },
     /// Acknowledgment (ACK) packet.
     Ack { block_num: u16 },
+    /// Option Acknowledgment (OACK) packet.
+    OptionAck { opts: TftpOptsParser<'a> },
     /// Error (ERR) packet.
     Error { code: ErrorCode, msg: &'a str },
 }
@@ -258,11 +326,19 @@ impl<'a> Repr<'a> {
     /// Return the length of a packet that will be emitted from this high-level representation.
     pub fn buffer_len(&self) -> usize {
         match self {
-            Repr::ReadRequest { filename, mode } | Repr::WriteRequest { filename, mode } => {
-                2 + filename.len() + 1 + mode.as_str().len() + 1
+            Repr::ReadRequest {
+                filename,
+                mode,
+                opts,
             }
+            | Repr::WriteRequest {
+                filename,
+                mode,
+                opts,
+            } => 2 + filename.len() + 1 + mode.as_str().len() + 1 + opts.len(),
             Repr::Data { data, .. } => 2 + 2 + data.len(),
             Repr::Error { msg, .. } => 2 + 2 + msg.len() + 1,
+            Repr::OptionAck { opts } => 2 + opts.len(),
             Repr::Ack { .. } => 4,
         }
     }
@@ -276,10 +352,12 @@ impl<'a> Repr<'a> {
             OpCode::Read => Repr::ReadRequest {
                 filename: packet.filename(),
                 mode: packet.mode(),
+                opts: packet.options(),
             },
             OpCode::Write => Repr::WriteRequest {
                 filename: packet.filename(),
                 mode: packet.mode(),
+                opts: packet.options(),
             },
             OpCode::Data => Repr::Data {
                 block_num: packet.block_number(),
@@ -287,6 +365,9 @@ impl<'a> Repr<'a> {
             },
             OpCode::Ack => Repr::Ack {
                 block_num: packet.block_number(),
+            },
+            OpCode::OptionAck => Repr::OptionAck {
+                opts: packet.options(),
             },
             OpCode::Error => Repr::Error {
                 code: packet.error_code(),
@@ -302,13 +383,27 @@ impl<'a> Repr<'a> {
         T: AsRef<[u8]> + AsMut<[u8]> + ?Sized,
     {
         match *self {
-            Self::ReadRequest { filename, mode } => {
+            Self::OptionAck { opts } => {
+                packet.set_opcode(OpCode::OptionAck);
+                packet.set_data(opts.as_bytes());
+            }
+            Self::ReadRequest {
+                filename,
+                mode,
+                opts,
+            } => {
                 packet.set_opcode(OpCode::Read);
                 packet.set_filename_and_mode(filename, mode);
+                packet.set_data(opts.as_bytes());
             }
-            Self::WriteRequest { filename, mode } => {
+            Self::WriteRequest {
+                filename,
+                mode,
+                opts,
+            } => {
                 packet.set_opcode(OpCode::Write);
                 packet.set_filename_and_mode(filename, mode);
+                packet.set_data(opts.as_bytes());
             }
             Self::Data { block_num, data } => {
                 packet.set_opcode(OpCode::Data);
@@ -451,6 +546,7 @@ mod test {
                 Repr::ReadRequest {
                     filename: "rfc1350.txt",
                     mode: Mode::Octet,
+                    opts: TftpOptsParser(&[]),
                 },
                 &RRQ_BYTES[..],
             ),
@@ -458,6 +554,7 @@ mod test {
                 Repr::WriteRequest {
                     filename: "rfc1350.txt",
                     mode: Mode::Octet,
+                    opts: TftpOptsParser(&[]),
                 },
                 &WRQ_BYTES[..],
             ),
@@ -492,6 +589,7 @@ mod test {
                 Repr::ReadRequest {
                     filename: "rfc1350.txt",
                     mode: Mode::Octet,
+                    opts: TftpOptsParser(&[]),
                 },
                 &RRQ_BYTES[..],
             ),
@@ -499,6 +597,7 @@ mod test {
                 Repr::WriteRequest {
                     filename: "rfc1350.txt",
                     mode: Mode::Octet,
+                    opts: TftpOptsParser(&[]),
                 },
                 &WRQ_BYTES[..],
             ),
