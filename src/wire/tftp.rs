@@ -170,11 +170,9 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     /// Returns the options contained in this packet.
-    pub fn options(&self) -> TftpOptsParser {
-        // TODO: We could improve the parsing performance of this by caching the start index.
-        // Or by doing this explicitly in the emit Repr function.
-        let start = field::OPCODE.end + self.filename().len() + 1 + self.mode().as_str().len() + 1;
-        TftpOptsParser::new(&self.buffer.as_ref()[start..])
+    /// The `start` parameter is the index of the first byte of the options.
+    pub fn options(&self, start: usize) -> TftpOptsReader {
+        TftpOptsReader::new(&self.buffer.as_ref()[start..])
     }
 
     /// Returns the error code of this packet.
@@ -248,6 +246,21 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     }
 }
 
+impl<'a, T: AsRef<[u8]> + AsMut<[u8]> + ?Sized> Packet<&'a mut T> {
+    /// Return a pointer to the options.
+    /// The `start` parameter is the index of the first byte of the options.
+    #[inline]
+    pub fn options_mut(&mut self, start: usize) -> TftpOptsWriter<'_> {
+        log::debug!("options_mut: start={}", start);
+        log::debug!("buffer len={}", self.buffer.as_ref().len());
+        log::debug!(
+            "buffer len after start: {}",
+            self.buffer.as_ref()[start..].len()
+        );
+        TftpOptsWriter::new(&mut self.buffer.as_mut()[start..])
+    }
+}
+
 /// TFTP Option
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct TftpOption<'a> {
@@ -255,13 +268,56 @@ pub struct TftpOption<'a> {
     pub value: &'a str,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub struct TftpOptsParser<'a>(&'a [u8]);
+impl TftpOption<'_> {
+    pub fn new<'a>(name: &'a str, value: &'a str) -> TftpOption<'a> {
+        TftpOption { name, value }
+    }
 
-impl TftpOptsParser<'_> {
+    /// Returns the total byte length of this option.
+    pub fn len(&self) -> usize {
+        self.name.len() + self.value.len() + 2
+    }
+}
+
+#[derive(Debug)]
+pub struct TftpOptsWriter<'a> {
+    buffer: &'a mut [u8],
+}
+
+impl TftpOptsWriter<'_> {
+    /// Create a new TFTP options writer.
+    pub fn new(buffer: &'_ mut [u8]) -> TftpOptsWriter<'_> {
+        TftpOptsWriter { buffer }
+    }
+
+    /// Emit a  [`DhcpOption`] into a [`DhcpOptionWriter`].
+    pub fn emit(&mut self, option: TftpOption<'_>) -> Result<()> {
+        let total_len = option.len();
+        if self.buffer.len() < total_len {
+            log::debug!("buffer len {} < total len {}", self.buffer.len(), total_len);
+            return Err(Error);
+        }
+
+        let (buf, rest) = core::mem::take(&mut self.buffer).split_at_mut(total_len);
+        self.buffer = rest;
+
+        buf[..option.name.len()].copy_from_slice(option.name.as_bytes());
+        buf[option.name.len()] = 0;
+
+        buf[option.name.len() + 1..total_len - 1].copy_from_slice(option.value.as_bytes());
+        buf[total_len - 1] = 0;
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct TftpOptsReader<'a>(&'a [u8]);
+
+impl TftpOptsReader<'_> {
     /// Create a new TFTP options parser.
-    pub fn new(options: &'_ [u8]) -> TftpOptsParser<'_> {
-        TftpOptsParser(options)
+    pub fn new(options: &'_ [u8]) -> TftpOptsReader<'_> {
+        TftpOptsReader(options)
     }
 
     /// Returns the size in bytes of the options.
@@ -304,20 +360,20 @@ pub enum Repr<'a> {
     ReadRequest {
         filename: &'a str,
         mode: Mode,
-        opts: TftpOptsParser<'a>,
+        opts: TftpOptsReader<'a>,
     },
     /// Write request (WRQ) packet.
     WriteRequest {
         filename: &'a str,
         mode: Mode,
-        opts: TftpOptsParser<'a>,
+        opts: TftpOptsReader<'a>,
     },
     /// Data (DATA) packet.
     Data { block_num: u16, data: &'a [u8] },
     /// Acknowledgment (ACK) packet.
     Ack { block_num: u16 },
     /// Option Acknowledgment (OACK) packet.
-    OptionAck { opts: TftpOptsParser<'a> },
+    OptionAck { opts: TftpOptsReader<'a> },
     /// Error (ERR) packet.
     Error { code: ErrorCode, msg: &'a str },
 }
@@ -339,7 +395,7 @@ impl<'a> Repr<'a> {
             Repr::Data { data, .. } => 2 + 2 + data.len(),
             Repr::Error { msg, .. } => 2 + 2 + msg.len() + 1,
             Repr::OptionAck { opts } => 2 + opts.len(),
-            Repr::Ack { .. } => 4,
+            Repr::Ack { block_num } => 4,
         }
     }
 
@@ -349,16 +405,28 @@ impl<'a> Repr<'a> {
         T: AsRef<[u8]> + ?Sized,
     {
         Ok(match packet.opcode() {
-            OpCode::Read => Repr::ReadRequest {
-                filename: packet.filename(),
-                mode: packet.mode(),
-                opts: packet.options(),
-            },
-            OpCode::Write => Repr::WriteRequest {
-                filename: packet.filename(),
-                mode: packet.mode(),
-                opts: packet.options(),
-            },
+            OpCode::Read => {
+                let filename = packet.filename();
+                let mode = packet.mode();
+                let start = field::OPCODE.end + filename.len() + 1 + mode.as_str().len() + 1;
+                let opts = packet.options(start);
+                Repr::ReadRequest {
+                    filename,
+                    mode,
+                    opts,
+                }
+            }
+            OpCode::Write => {
+                let filename = packet.filename();
+                let mode = packet.mode();
+                let start = field::OPCODE.end + filename.len() + 1 + mode.as_str().len() + 1;
+                let opts = packet.options(start);
+                Repr::WriteRequest {
+                    filename,
+                    mode,
+                    opts,
+                }
+            }
             OpCode::Data => Repr::Data {
                 block_num: packet.block_number(),
                 data: packet.data(),
@@ -366,9 +434,11 @@ impl<'a> Repr<'a> {
             OpCode::Ack => Repr::Ack {
                 block_num: packet.block_number(),
             },
-            OpCode::OptionAck => Repr::OptionAck {
-                opts: packet.options(),
-            },
+            OpCode::OptionAck => {
+                let start = field::OPCODE.end;
+                let opts = packet.options(start);
+                Repr::OptionAck { opts }
+            }
             OpCode::Error => Repr::Error {
                 code: packet.error_code(),
                 msg: packet.error_msg(),
@@ -385,7 +455,12 @@ impl<'a> Repr<'a> {
         match *self {
             Self::OptionAck { opts } => {
                 packet.set_opcode(OpCode::OptionAck);
-                packet.set_data(opts.as_bytes());
+                let start = field::OPCODE.end;
+                let mut opt_mut = packet.options_mut(start);
+                for option in opts.options() {
+                    log::debug!("Emitting option {:?}", option);
+                    opt_mut.emit(option).unwrap();
+                }
             }
             Self::ReadRequest {
                 filename,
@@ -394,7 +469,11 @@ impl<'a> Repr<'a> {
             } => {
                 packet.set_opcode(OpCode::Read);
                 packet.set_filename_and_mode(filename, mode);
-                packet.set_data(opts.as_bytes());
+                let start = field::OPCODE.end + filename.len() + 1 + mode.as_str().len() + 1;
+                let mut opt_mut = packet.options_mut(start);
+                for option in opts.options() {
+                    opt_mut.emit(option).unwrap();
+                }
             }
             Self::WriteRequest {
                 filename,
@@ -403,7 +482,11 @@ impl<'a> Repr<'a> {
             } => {
                 packet.set_opcode(OpCode::Write);
                 packet.set_filename_and_mode(filename, mode);
-                packet.set_data(opts.as_bytes());
+                let start = field::OPCODE.end + filename.len() + 1 + mode.as_str().len() + 1;
+                let mut opt_mut = packet.options_mut(start);
+                for option in opts.options() {
+                    opt_mut.emit(option).unwrap();
+                }
             }
             Self::Data { block_num, data } => {
                 packet.set_opcode(OpCode::Data);
@@ -546,7 +629,7 @@ mod test {
                 Repr::ReadRequest {
                     filename: "rfc1350.txt",
                     mode: Mode::Octet,
-                    opts: TftpOptsParser(&[]),
+                    opts: TftpOptsReader(&[]),
                 },
                 &RRQ_BYTES[..],
             ),
@@ -554,7 +637,7 @@ mod test {
                 Repr::WriteRequest {
                     filename: "rfc1350.txt",
                     mode: Mode::Octet,
-                    opts: TftpOptsParser(&[]),
+                    opts: TftpOptsReader(&[]),
                 },
                 &WRQ_BYTES[..],
             ),
@@ -589,7 +672,7 @@ mod test {
                 Repr::ReadRequest {
                     filename: "rfc1350.txt",
                     mode: Mode::Octet,
-                    opts: TftpOptsParser(&[]),
+                    opts: TftpOptsReader(&[]),
                 },
                 &RRQ_BYTES[..],
             ),
@@ -597,7 +680,7 @@ mod test {
                 Repr::WriteRequest {
                     filename: "rfc1350.txt",
                     mode: Mode::Octet,
-                    opts: TftpOptsParser(&[]),
+                    opts: TftpOptsReader(&[]),
                 },
                 &WRQ_BYTES[..],
             ),
