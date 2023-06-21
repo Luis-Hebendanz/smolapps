@@ -281,13 +281,19 @@ impl TftpOption<'_> {
 
 #[derive(Debug)]
 pub struct TftpOptsWriter<'a> {
+    size: usize,
     buffer: &'a mut [u8],
 }
 
 impl TftpOptsWriter<'_> {
     /// Create a new TFTP options writer.
     pub fn new(buffer: &'_ mut [u8]) -> TftpOptsWriter<'_> {
-        TftpOptsWriter { buffer }
+        TftpOptsWriter { buffer, size: 0 }
+    }
+
+    /// Returns the number of bytes written.
+    pub fn len(&self) -> usize {
+        self.size
     }
 
     /// Emit a  [`DhcpOption`] into a [`DhcpOptionWriter`].
@@ -306,6 +312,8 @@ impl TftpOptsWriter<'_> {
 
         buf[option.name.len() + 1..total_len - 1].copy_from_slice(option.value.as_bytes());
         buf[total_len - 1] = 0;
+
+        self.size += total_len;
 
         Ok(())
     }
@@ -340,7 +348,7 @@ impl TftpOptsReader<'_> {
                 Some(name) => name,
                 None => return None,
             };
-            if name.is_empty() {
+            if name.is_empty() || name == b"0" {
                 return None;
             }
             let value = parts.next().unwrap_or(&[]);
