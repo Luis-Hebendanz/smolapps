@@ -15,7 +15,7 @@ version = "0.1.4"
 all-features = true
 
 [dependencies]
-smoltcp = { path = "../smoltcp" }
+smoltcp = { git = "https://github.com/Luis-Hebendanz/smoltcp.git", branch="pxe_2" }
 byteorder = { version = "1.3.4", default-features = false }
 managed = { version = "0.7.1", default-features = false }
 log = { version = "0.4.8", default-features = false }

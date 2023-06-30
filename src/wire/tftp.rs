@@ -251,12 +251,6 @@ impl<'a, T: AsRef<[u8]> + AsMut<[u8]> + ?Sized> Packet<&'a mut T> {
     /// The `start` parameter is the index of the first byte of the options.
     #[inline]
     pub fn options_mut(&mut self, start: usize) -> TftpOptsWriter<'_> {
-        log::debug!("options_mut: start={}", start);
-        log::debug!("buffer len={}", self.buffer.as_ref().len());
-        log::debug!(
-            "buffer len after start: {}",
-            self.buffer.as_ref()[start..].len()
-        );
         TftpOptsWriter::new(&mut self.buffer.as_mut()[start..])
     }
 }
@@ -300,7 +294,6 @@ impl TftpOptsWriter<'_> {
     pub fn emit(&mut self, option: TftpOption<'_>) -> Result<()> {
         let total_len = option.len();
         if self.buffer.len() < total_len {
-            log::debug!("buffer len {} < total len {}", self.buffer.len(), total_len);
             return Err(Error);
         }
 
@@ -466,7 +459,6 @@ impl<'a> Repr<'a> {
                 let start = field::OPCODE.end;
                 let mut opt_mut = packet.options_mut(start);
                 for option in opts.options() {
-                    log::debug!("Emitting option {:?}", option);
                     opt_mut.emit(option).unwrap();
                 }
             }

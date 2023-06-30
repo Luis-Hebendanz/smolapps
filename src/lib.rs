@@ -77,5 +77,5 @@ pub mod wire;
 //#[cfg(feature = "sntp")]
 //pub mod sntp;
 
-#[cfg(feature = "tftp")]
-pub mod tftp;
+//#[cfg(feature = "tftp")]
+//pub mod tftp;
